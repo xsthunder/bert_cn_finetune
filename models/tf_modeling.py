@@ -642,18 +642,18 @@ class BertModelMRC(object):
         self.bert = BertModel(config, is_training, input_ids, input_mask, token_type_ids, use_float16, scope)
 
         # finetune mrc
-        # with tf.device("/gpu:0"):
-        #     with tf.variable_scope('qa_outputs', reuse=tf.AUTO_REUSE,
-        #                            custom_getter=get_custom_getter(tf.float16 if use_float16 else tf.float32)):
-        self.sequence_output = self.bert.get_sequence_output()
-        self.output_logits = dense(self.sequence_output, 2, name='qa_outputs')  # [bs, len, 2]
-        self.start_logits, self.end_logits = tf.split(self.output_logits, 2, axis=2)
-        self.start_logits = tf.squeeze(self.start_logits, -1)
-        self.end_logits = tf.squeeze(self.end_logits, -1)
-        self.start_logits += tf.cast(-10000. * (1 - input_mask), self.start_logits.dtype)
-        self.end_logits += tf.cast(-10000. * (1 - input_mask), self.end_logits.dtype)
-        self.start_logits = tf.identity(self.start_logits, name='start_logits')
-        self.end_logits = tf.identity(self.end_logits, name='end_logits')
+        with tf.device("/gpu:0"):
+            with tf.variable_scope('qa_outputs', reuse=tf.AUTO_REUSE,
+                                    custom_getter=get_custom_getter(tf.float16 if use_float16 else tf.float32)):
+            self.sequence_output = self.bert.get_sequence_output()
+            self.output_logits = dense(self.sequence_output, 2, name='qa_outputs')  # [bs, len, 2]
+            self.start_logits, self.end_logits = tf.split(self.output_logits, 2, axis=2)
+            self.start_logits = tf.squeeze(self.start_logits, -1)
+            self.end_logits = tf.squeeze(self.end_logits, -1)
+            self.start_logits += tf.cast(-10000. * (1 - input_mask), self.start_logits.dtype)
+            self.end_logits += tf.cast(-10000. * (1 - input_mask), self.end_logits.dtype)
+            self.start_logits = tf.identity(self.start_logits, name='start_logits')
+            self.end_logits = tf.identity(self.end_logits, name='end_logits')
 
         if is_training and start_positions is not None and end_positions is not None:
             start_loss_ = tf.nn.sparse_softmax_cross_entropy_with_logits(
