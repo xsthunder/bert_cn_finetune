@@ -801,7 +801,7 @@ def main():
             with open(output_test_file, "w") as writer:
                 logger.info("***** Test results *****")
                 for key in sorted(result.keys()):
-                    logger.info("test_log_for_seed", seed)
+                    logger.info("test_log_for_seed %s", str(seed))
                     logger.info("  %s = %s", key, str(result[key]))
                     writer.write("%s = %s\n" % (key, str(result[key])))
             output_test_file = os.path.join(args.output_dir, "logits_test.txt")
@@ -823,14 +823,19 @@ def main():
         del model
         del optimizer
         torch.cuda.empty_cache()
-
-    logger.info('Mean Acc:', np.mean(Accs))
-    logger.info('Best Acc:', np.max(Accs))
+    s1 = f'Accs: {str(Accs)}'
+    s2 = f'Mean Acc: {str(np.mean(Accs))}'
+    s3 = f'Best Acc: {str(np.max(Accs))}'
+    logger.info(s1)
+    logger.info(s2)
+    logger.info(s3)
     with open(args.log_file, 'a') as aw:
-        aw.write('Acc:', Accs)
-        logger.info('Acc:', Accs)
-        aw.write('Mean Acc:', np.mean(Accs))
-        logger.info('Best Acc:', np.max(Accs))
+        aw.write(s1)
+        aw.write('\n')
+        aw.write(s2)
+        aw.write('\n')
+        aw.write(s3)
+        aw.write('\n')
 
 
 if __name__ == "__main__":
