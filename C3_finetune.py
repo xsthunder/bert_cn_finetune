@@ -426,7 +426,7 @@ def main():
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
             args.gradient_accumulation_steps))
-    Accs = [0]
+    Accs = []
     # 存一个全局最优的模型
     args.train_batch_size = int(args.train_batch_size / args.gradient_accumulation_steps)
     passed_output_dir = args.output_dir
@@ -814,7 +814,7 @@ def main():
                         else:
                             f.write(" ")
             Accs.append(test_accuracy)
-            if test_accuracy > np.max(Accs):
+            if test_accuracy > np.max(Accs, initial=0):
                 import shutil
                 best_acc = test_accuracy
                 shutil.copyfile(os.path.join(args.output_dir, "model.pt"), os.path.join(passed_output_dir, "model_over_seed.pt"))
