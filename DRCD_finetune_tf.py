@@ -366,7 +366,7 @@ if __name__ == '__main__':
                 aw.write(f"Test evaled on seed {seed_}" + '\n')
                 aw.write(json.dumps(str(tmp_result)) + '\n')
             F1s_test.append(tmp_result['F1'])
-            EMs_test.append(tmp_result['EMs_test'])
+            EMs_test.append(tmp_result['EM'])
 
     if mpi_rank == 0:
         print("ON DEV")
