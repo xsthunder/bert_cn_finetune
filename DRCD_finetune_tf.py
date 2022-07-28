@@ -84,6 +84,9 @@ if __name__ == '__main__':
     parser.add_argument('--dev_dir2', type=str, default='dataset/DRCD/dev_features_roberta512.json')
     parser.add_argument('--train_file', type=str, default='origin_data/DRCD/DRCD_training.json')
     parser.add_argument('--dev_file', type=str, default='origin_data/DRCD/DRCD_dev.json')
+    parser.add_argument('--test_file', type=str, default='origin_data/DRCD/DRCD_test.json')
+    parser.add_argument('--test_dir1', type=str, default='dataset/DRCD/test_examples_roberta512.json')
+    parser.add_argument('--test_dir2', type=str, default='dataset/DRCD/test_features_roberta512.json')
     parser.add_argument('--bert_config_file', type=str,
                         default='check_points/pretrain_models/google_bert_base/bert_config.json')
     parser.add_argument('--init_restore_dir', type=str,
@@ -127,10 +130,14 @@ if __name__ == '__main__':
         if not os.path.exists(args.dev_dir1) or not os.path.exists(args.dev_dir2):
             json2features(args.dev_file, [args.dev_dir1, args.dev_dir2], tokenizer, is_training=False)
 
+        if not os.path.exists(args.test_dir1) or not os.path.exists(args.test_dir2):
+            json2features(args.test_file, [args.test_dir1, args.test_dir2], tokenizer, is_training=False)
+
     train_data = json.load(open(args.train_dir, 'r'))
     dev_examples = json.load(open(args.dev_dir1, 'r'))
     dev_data = json.load(open(args.dev_dir2, 'r'))
-
+    test_examples = json.load(open(args.test_dir1, 'r'))
+    test_data = json.load(open(args.test_dir2, 'r'))
     if mpi_rank == 0:
         if os.path.exists(args.log_file):
             os.remove(args.log_file)
@@ -149,10 +156,14 @@ if __name__ == '__main__':
     steps_per_epoch = len(train_data) // args.n_batch
     eval_steps = int(steps_per_epoch * args.eval_epochs)
     dev_steps_per_epoch = len(dev_data) // (args.n_batch * n_gpu)
+    test_steps_per_epoch = len(test_data) // (args.n_batch * n_gpu)
+
     if len(train_data) % args.n_batch != 0:
         steps_per_epoch += 1
     if len(dev_data) % (args.n_batch * n_gpu) != 0:
         dev_steps_per_epoch += 1
+    if len(test_data) % (args.n_batch * n_gpu) != 0:
+        test_steps_per_epoch += 1
     total_steps = steps_per_epoch * args.train_epochs
     warmup_iters = int(args.warmup_rate * total_steps)
 
@@ -162,6 +173,8 @@ if __name__ == '__main__':
 
     F1s = []
     EMs = []
+    F1s_test = []
+    EMs_test = []
     best_f1_em = 0
     with tf.device("/gpu:0"):
         input_ids = tf.placeholder(tf.int32, shape=[None, args.max_seq_length], name='input_ids')
@@ -219,6 +232,7 @@ if __name__ == '__main__':
 
         train_gen = data_generator(train_data, args.n_batch, shuffle=True, drop_last=False)
         dev_gen = data_generator(dev_data, args.n_batch * n_gpu, shuffle=False, drop_last=False)
+        test_gen = data_generator(test_data, args.n_batch * n_gpu, shuffle=False, drop_last=False)
 
         config = tf.ConfigProto()
         config.gpu_options.visible_device_list = str(mpi_rank)
@@ -308,13 +322,64 @@ if __name__ == '__main__':
                                     save_prex += '.ckpt'
                                     saver.save(get_session(sess),
                                                save_path=os.path.join(args.checkpoint_dir, save_prex))
+                                    # save best over one seed
+                                    saver.save(get_session(sess),
+                                               save_path=os.path.join(args.checkpoint_dir, f'seed_{seed_}.ckpt'))
+        
+        utils.init_from_checkpoint(os.path.join(args.checkpoint_dir, f'seed_{seed_}.ckpt'), rank=mpi_rank)
+        msg = f"eval on Test: load best on Dev from {os.path.join(args.checkpoint_dir, f'seed_{seed_}.ckpt')}"
+        print_rank0(msg)
+        with open(args.log_file, 'a') as aw:
+            aw.write(msg + '\n')
+        with tf.train.MonitoredTrainingSession(checkpoint_dir=None,
+                                               config=config) as sess:
+            all_results = []
+            for i_step in tqdm(range(test_steps_per_epoch),
+                                disable=False if mpi_rank == 0 else True):
+                batch_data = next(test_gen)
+                feed_data = {input_ids: batch_data['input_ids'],
+                                input_masks: batch_data['input_mask'],
+                                segment_ids: batch_data['segment_ids']}
+                batch_start_logits, batch_end_logits = sess.run(
+                    [eval_model.start_logits, eval_model.end_logits],
+                    feed_dict=feed_data)
+                for j in range(len(batch_data['unique_id'])):
+                    start_logits = batch_start_logits[j]
+                    end_logits = batch_end_logits[j]
+                    unique_id = batch_data['unique_id'][j]
+                    all_results.append(RawResult(unique_id=unique_id,
+                                                    start_logits=start_logits,
+                                                    end_logits=end_logits))
+            output_prediction_file = os.path.join(args.checkpoint_dir,
+                                                    'test_prediction_seed_'+ str(seed_) + '.json')
+            output_nbest_file = os.path.join(args.checkpoint_dir, 'test_nbest_seed_' + str(seed_)+ '.json')
 
-        F1s.append(best_f1)
-        EMs.append(best_em)
+            write_predictions(test_examples, test_data, all_results,
+                                n_best_size=args.n_best, max_answer_length=args.max_ans_length,
+                                do_lower_case=True, output_prediction_file=output_prediction_file,
+                                output_nbest_file=output_nbest_file)
+            tmp_result = get_eval(args.test_file, output_prediction_file)
+            tmp_result['STEP'] = global_steps
+            print_rank0(f"Test evaled on seed {seed_}" )
+            print_rank0(json.dumps(str(tmp_result)))
+            with open(args.log_file, 'a') as aw:
+                aw.write(f"Test evaled on seed {seed_}" + '\n')
+                aw.write(json.dumps(str(tmp_result)) + '\n')
+            F1s_test.append(tmp_result['F1'])
+            EMs_test.append(tmp_result['EMs_test'])
 
     if mpi_rank == 0:
+        print("ON DEV")
         print('Mean F1:', np.mean(F1s), 'Mean EM:', np.mean(EMs))
         print('Best F1:', np.max(F1s), 'Best EM:', np.max(EMs))
         with open(args.log_file, 'a') as aw:
             aw.write('Mean(Best) F1:{}({})\n'.format(np.mean(F1s), np.max(F1s)))
             aw.write('Mean(Best) EM:{}({})\n'.format(np.mean(EMs), np.max(EMs)))
+
+    if mpi_rank == 0:
+        print("ON TEST")
+        print('Mean F1:', np.mean(F1s_test), 'Mean EM:', np.mean(EMs_test))
+        print('Best F1:', np.max(F1s_test), 'Best EM:', np.max(EMs_test))
+        with open(args.log_file, 'a') as aw:
+            aw.write('Mean(Best) F1:{}({})\n'.format(np.mean(F1s_test), np.max(F1s_test)))
+            aw.write('Mean(Best) EM:{}({})\n'.format(np.mean(EMs_test), np.max(EMs_test)))
